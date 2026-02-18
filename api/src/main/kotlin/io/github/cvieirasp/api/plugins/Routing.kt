@@ -2,6 +2,9 @@ package io.github.cvieirasp.api.plugins
 
 import io.github.cvieirasp.api.db.DatabaseFactory
 import io.github.cvieirasp.api.db.DbPoolStats
+import io.github.cvieirasp.api.source.SourceRepositoryImpl
+import io.github.cvieirasp.api.source.SourceUseCase
+import io.github.cvieirasp.api.source.sourceRoutes
 import io.ktor.http.*
 import io.ktor.server.application.*
 import io.ktor.server.response.*
@@ -14,11 +17,11 @@ import kotlinx.serialization.Serializable
 data class HealthResponse(val status: String, val db: String, val pool: DbPoolStats)
 
 /**
- * This file is for configuring routing in the Ktor application.
- * It defines a health check endpoint at /health that checks the database connection and returns its status.
- * The response includes the overall status, database status, and connection pool statistics.
+ * Configure routing for the Ktor application.
  */
 fun Application.configureRouting() {
+    val sourceUseCase = SourceUseCase(SourceRepositoryImpl())
+
     routing {
         get("/health") {
             val dbUp = withContext(Dispatchers.IO) { DatabaseFactory.ping() }
@@ -30,5 +33,7 @@ fun Application.configureRouting() {
                 pool = DatabaseFactory.poolStats(),
             ))
         }
+
+        sourceRoutes(sourceUseCase)
     }
 }
