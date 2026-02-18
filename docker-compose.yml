@@ -1,0 +1,67 @@
+services:
+
+  postgres:
+    image: postgres:18.2-alpine
+    container_name: webhookhub-postgres
+    environment:
+      POSTGRES_DB: webhookhub
+      POSTGRES_USER: webhookhub
+      POSTGRES_PASSWORD: webhookhub
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - webhookhub
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U webhookhub -d webhookhub"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  rabbitmq:
+    image: rabbitmq:4.2-management-alpine
+    container_name: webhookhub-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: webhookhub
+      RABBITMQ_DEFAULT_PASS: webhookhub
+      RABBITMQ_DEFAULT_VHOST: webhookhub
+    ports:
+      - "5672:5672"    # AMQP
+      - "15672:15672"  # Management UI
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - webhookhub
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  pgadmin:
+    image: dpage/pgadmin4:9.11
+    container_name: webhookhub-pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@webhookhub.local
+      PGADMIN_DEFAULT_PASSWORD: admin
+      PGADMIN_CONFIG_SERVER_MODE: "False"
+      PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: "False"
+    ports:
+      - "5050:80"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    networks:
+      - webhookhub
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  rabbitmq_data:
+  pgadmin_data:
+
+networks:
+  webhookhub:
+    driver: bridge
