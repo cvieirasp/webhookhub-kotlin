@@ -49,11 +49,14 @@ Retry topology (RabbitMQ):
 - [x] `:api` — `POST /sources`, `GET /sources` — layered architecture (Repository → UseCase → Routes)
 - [x] Unit tests — `SourceUseCase` (13 tests) and `SourceRoutes` (10 tests), zero I/O
 - [x] Integration tests — repository layer and full HTTP stack via Testcontainers PostgreSQL (11 tests)
+- [x] `:api` — Destination aggregate (`Destination` + `DestinationRule`) with unified repository, use case, and routes
+- [x] `:api` — `POST /destinations`, `GET /destinations`, `GET /destinations/{id}`, `POST /destinations/{id}/rules`
+- [x] `:api` — `NotFoundException` mapped to HTTP 404 via `StatusPages`
+- [x] Unit and integration tests for destination — use case (33), routes (24), repository (14), API (11)
 
 ### Planned
 
 - [ ] `POST /webhooks/{sourceName}` — ingest webhook event (HMAC validation, idempotency, publish to RabbitMQ)
-- [ ] Destinations management — `POST /destinations`, `GET /destinations`
 - [ ] `:worker` — RabbitMQ consumer, HTTP delivery, retry logic, DLQ handling
 - [ ] HMAC-SHA256 signature validation on ingestion
 - [ ] Idempotency key deduplication
@@ -186,6 +189,80 @@ GET /sources
   }
 ]
 ```
+
+---
+
+### Destinations
+
+Destinations are HTTP endpoints that receive webhook events. Each destination is created with one or more routing rules that determine which source/event-type pairs are delivered to it.
+
+#### Create a destination
+
+```
+POST /destinations
+Content-Type: application/json
+```
+
+```json
+{
+  "name": "my-service",
+  "targetUrl": "https://my-service.example.com/webhook",
+  "rules": [
+    { "sourceName": "github", "eventType": "push" }
+  ]
+}
+```
+
+At least one rule is required. Returns `400 Bad Request` if `name` is blank or exceeds 100 characters, `targetUrl` is not a valid HTTP/HTTPS URL, or `rules` is empty.
+
+**Response `201 Created`**
+```json
+{
+  "id": "a1b2c3d4-...",
+  "name": "my-service",
+  "targetUrl": "https://my-service.example.com/webhook",
+  "active": true,
+  "createdAt": "2026-02-19T10:00:00Z",
+  "rules": [
+    { "id": "e5f6...", "sourceName": "github", "eventType": "push" }
+  ]
+}
+```
+
+#### List destinations
+
+```
+GET /destinations
+```
+
+**Response `200 OK`** — each destination includes its rules
+
+#### Get a destination
+
+```
+GET /destinations/{id}
+```
+
+**Response `200 OK`** — destination with its rules.
+Returns `404 Not Found` if the destination does not exist.
+
+#### Add a rule to a destination
+
+```
+POST /destinations/{id}/rules
+Content-Type: application/json
+```
+
+```json
+{ "sourceName": "stripe", "eventType": "charge.created" }
+```
+
+**Response `201 Created`**
+```json
+{ "id": "f7a8...", "sourceName": "stripe", "eventType": "charge.created" }
+```
+
+Returns `404 Not Found` if the destination does not exist. Returns `400 Bad Request` if `sourceName` or `eventType` is blank.
 
 ---
 
