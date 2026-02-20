@@ -9,6 +9,20 @@ import org.jetbrains.exposed.sql.transactions.transaction
 class SourceRepositoryImpl : SourceRepository {
 
     /**
+     * The `findByName` method retrieves a source from the `SourceTable` based on the provided name.
+     * It uses the `selectAll` function to query the table and applies a `where` clause to filter by the name.
+     * The result is then mapped to a `Source` object using the `toSource` extension function.
+     * If no source is found with the given name, it returns null.
+     */
+    override fun findByName(name: String): Source? = transaction {
+        SourceTable
+            .selectAll()
+            .where { SourceTable.name eq name }
+            .map { it.toSource() }
+            .singleOrNull()
+    }
+
+    /**
      * The `findAll` method retrieves all sources from the `SourceTable` in the database.
      * It uses the `selectAll` function to get all rows and orders them by the `createdAt` column in descending order.
      * Each row is then mapped to a `Source` object using the `toSource` extension function.

@@ -1,6 +1,7 @@
 package io.github.cvieirasp.api.plugins
 
 import io.github.cvieirasp.api.NotFoundException
+import io.github.cvieirasp.api.UnauthorizedException
 import io.ktor.http.*
 import io.ktor.server.application.*
 import io.ktor.server.plugins.BadRequestException
@@ -16,11 +17,21 @@ data class ErrorResponse(val error: String)
  */
 fun Application.configureStatusPages() {
     /**
-     * Install the StatusPages plugin to handle exceptions and specific HTTP status codes.
-     * This configuration will catch BadRequestException, IllegalArgumentException, and any other Throwable,
-     * responding with appropriate HTTP status codes and error messages.
+     * Catches specific exceptions and responds with appropriate HTTP status codes and error messages.
+     *
+     * - [UnauthorizedException]: Responds with 401 Unauthorized.
+     * - [NotFoundException]: Responds with 404 Not Found.
+     * - [BadRequestException] and [IllegalArgumentException]: Responds with 400 Bad Request.
+     * - Any other [Throwable]: Responds with 500 Internal Server Error.
+     *
+     * Also handles specific HTTP status codes:
+     * - 404 Not Found: Responds with a JSON error message.
+     * - 405 Method Not Allowed: Responds with a JSON error message.
      */
     install(StatusPages) {
+        exception<UnauthorizedException> { call, cause ->
+            call.respond(HttpStatusCode.Unauthorized, ErrorResponse(cause.message ?: "Unauthorized"))
+        }
         exception<NotFoundException> { call, cause ->
             call.respond(HttpStatusCode.NotFound, ErrorResponse(cause.message ?: "Not found"))
         }

@@ -2,6 +2,7 @@ package io.github.cvieirasp.api.destination
 
 import org.jetbrains.exposed.sql.ResultRow
 import org.jetbrains.exposed.sql.SortOrder
+import org.jetbrains.exposed.sql.and
 import org.jetbrains.exposed.sql.insert
 import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.transactions.transaction
@@ -52,6 +53,26 @@ class DestinationRepositoryImpl : DestinationRepository {
             .map { it.toDestinationRule() }
 
         destination.copy(rules = rules)
+    }
+
+    /**
+     * Finds all active destinations that have a rule matching the given source name and event type.
+     */
+    override fun findBySourceNameAndEventType(sourceName: String, eventType: String): List<Destination> = transaction {
+        val ids = DestinationRuleTable
+            .selectAll()
+            .where {
+                (DestinationRuleTable.sourceName eq sourceName) and
+                (DestinationRuleTable.eventType eq eventType)
+            }
+            .map { it[DestinationRuleTable.destinationId] }
+
+        if (ids.isEmpty()) return@transaction emptyList()
+
+        DestinationTable
+            .selectAll()
+            .where { (DestinationTable.id inList ids) and (DestinationTable.active eq true) }
+            .map { it.toDestination() }
     }
 
     /**
