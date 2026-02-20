@@ -20,6 +20,11 @@ class FakeDestinationRepository : DestinationRepository {
         return destination
     }
 
+    override fun findBySourceNameAndEventType(sourceName: String, eventType: String): List<Destination> =
+        destinations.filter { dest ->
+            dest.rules.any { it.sourceName == sourceName && it.eventType == eventType }
+        }
+
     override fun addRule(destinationId: UUID, rule: DestinationRule): DestinationRule {
         val index = destinations.indexOfFirst { it.id == destinationId }
         destinations[index] = destinations[index].copy(rules = destinations[index].rules + rule)

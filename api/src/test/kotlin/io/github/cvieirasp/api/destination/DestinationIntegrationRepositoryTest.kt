@@ -174,6 +174,34 @@ class DestinationIntegrationRepositoryTest {
 
     // endregion
 
+    // region findBySourceNameAndEventType
+
+    @Test
+    fun `findBySourceNameAndEventType returns matching active destinations`() {
+        val destination = aDestination(name = "service-a", targetUrl = "https://example.com/hook")
+        val rule = aDestinationRule(destinationId = destination.id, sourceName = "github", eventType = "push")
+        repository.create(destination.copy(rules = listOf(rule)))
+
+        val result = repository.findBySourceNameAndEventType("github", "push")
+
+        assertEquals(1, result.size)
+        assertEquals(destination.id, result.first().id)
+        assertEquals("https://example.com/hook", result.first().targetUrl)
+    }
+
+    @Test
+    fun `findBySourceNameAndEventType ignores inactive destinations`() {
+        val destination = aDestination(name = "service-a", active = false)
+        val rule = aDestinationRule(destinationId = destination.id, sourceName = "github", eventType = "push")
+        repository.create(destination.copy(rules = listOf(rule)))
+
+        val result = repository.findBySourceNameAndEventType("github", "push")
+
+        assertTrue(result.isEmpty())
+    }
+
+    // endregion
+
     // region addRule
 
     @Test

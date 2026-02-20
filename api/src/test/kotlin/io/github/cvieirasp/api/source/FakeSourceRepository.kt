@@ -13,6 +13,8 @@ class FakeSourceRepository : SourceRepository {
 
     override fun findAll(): List<Source> = sources.toList()
 
+    override fun findByName(name: String): Source? = sources.find { it.name == name }
+
     override fun create(source: Source): Source {
         sources.add(source)
         return source
