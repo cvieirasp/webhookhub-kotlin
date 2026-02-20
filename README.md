@@ -26,40 +26,11 @@ Retry topology (RabbitMQ):
 | Module | Responsibility |
 |---|---|
 | `:shared` | Queue message models (`DeliveryJob`), environment config (`EnvConfig`), shared JSON instance (`AppJson`), RabbitMQ topology declaration |
-| `:api` | Ktor/Netty server — webhook ingestion, source management, Flyway migrations, RabbitMQ topology init |
+| `:api` | Ktor/Netty server — webhook ingestion (HMAC validation, idempotency, delivery scheduling), source and destination management, Flyway migrations, RabbitMQ topology init |
 | `:worker` | RabbitMQ consumer — HTTP delivery, retry logic, delivery state updates *(planned)* |
 
 **Persistence** — Postgres is the source of truth for all delivery state, idempotency keys, and audit history.
 **Transport** — RabbitMQ is used exclusively as execution transport, not state storage.
-
----
-
-## Implementation Status
-
-### Completed
-
-- [x] Multi-module Gradle project (`shared`, `api`, `worker`)
-- [x] Docker Compose — PostgreSQL, RabbitMQ, PGAdmin
-- [x] Database schema — `sources`, `destinations`, `destination_rules`, `events`, `deliveries` (Flyway `V1__init.sql`)
-- [x] `:shared` — `EnvConfig`, `AppJson`, `DeliveryJob`, `RabbitMQTopology` (TTL + DLX + DLQ, idempotent declare)
-- [x] `:api` — Ktor + Netty, JSON serialization (`ContentNegotiation`), `StatusPages`
-- [x] `:api` — HikariCP connection pool + Exposed ORM + Flyway migrations on startup
-- [x] `:api` — RabbitMQ connection + topology declaration on startup
-- [x] `:api` — `GET /health` — DB connectivity check + HikariCP pool stats
-- [x] `:api` — `POST /sources`, `GET /sources` — layered architecture (Repository → UseCase → Routes)
-- [x] Unit tests — `SourceUseCase` (13 tests) and `SourceRoutes` (10 tests), zero I/O
-- [x] Integration tests — repository layer and full HTTP stack via Testcontainers PostgreSQL (11 tests)
-- [x] `:api` — Destination aggregate (`Destination` + `DestinationRule`) with unified repository, use case, and routes
-- [x] `:api` — `POST /destinations`, `GET /destinations`, `GET /destinations/{id}`, `POST /destinations/{id}/rules`
-- [x] `:api` — `NotFoundException` mapped to HTTP 404 via `StatusPages`
-- [x] Unit and integration tests for destination — use case (33), routes (24), repository (14), API (11)
-
-### Planned
-
-- [ ] `POST /webhooks/{sourceName}` — ingest webhook event (HMAC validation, idempotency, publish to RabbitMQ)
-- [ ] `:worker` — RabbitMQ consumer, HTTP delivery, retry logic, DLQ handling
-- [ ] HMAC-SHA256 signature validation on ingestion
-- [ ] Idempotency key deduplication
 
 ---
 
@@ -266,6 +237,31 @@ Returns `404 Not Found` if the destination does not exist. Returns `400 Bad Requ
 
 ---
 
+### Ingest
+
+Receives a webhook event from a registered source, validates its HMAC-SHA256 signature, persists the event, creates a `PENDING` delivery record for each matching destination, and publishes a `DeliveryJob` to RabbitMQ for asynchronous delivery.
+
+#### Ingest a webhook event
+
+```
+POST /ingest/{sourceName}?type={eventType}
+X-Signature: <hex-encoded HMAC-SHA256(secret, raw-request-body)>
+Content-Type: application/json
+```
+
+The raw request body is forwarded as-is to the destination. The `type` query parameter identifies the event type and is used to match destination routing rules.
+
+**Response `202 Accepted`** — returned for both new and duplicate events (idempotent)
+
+| Error | Condition |
+|---|---|
+| `400 Bad Request` | `type` query parameter is missing or blank |
+| `401 Unauthorized` | `X-Signature` header is missing, blank, or does not match `HMAC-SHA256(secret, body)` |
+| `401 Unauthorized` | Source exists but is inactive |
+| `404 Not Found` | No source registered under `{sourceName}` |
+
+---
+
 ## How to test
 
 **Unit tests** (no Docker required)
@@ -309,12 +305,12 @@ Declared idempotently on every startup by `RabbitMQTopology.declare()` in `:shar
 
 ---
 
-## Webhook signing (HMAC-SHA256) *(planned)*
+## Webhook signing (HMAC-SHA256)
 
-Every webhook source has a secret generated at creation time. The sender must include a signature header computed as:
+Every webhook source has a 64-character hex secret generated at creation time (`POST /sources`). The sender must include a signature header computed as:
 
 ```
-X-Webhook-Signature: sha256=<HMAC-SHA256(secret, raw-request-body)>
+X-Signature: <hex-encoded HMAC-SHA256(secret, raw-request-body)>
 ```
 
 The API validates the signature using constant-time comparison to prevent timing attacks.
