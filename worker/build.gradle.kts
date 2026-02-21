@@ -25,6 +25,7 @@ dependencies {
     // Tests
     testImplementation(kotlin("test"))
     testImplementation(libs.bundles.testcontainers)
+    testImplementation(libs.bundles.flyway)
 }
 
 application {
