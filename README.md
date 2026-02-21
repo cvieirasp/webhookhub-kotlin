@@ -18,8 +18,8 @@ HTTP POST ──>│     :api     │── publishes job ──> webhookhub.del
                                                 └─────────────┘
 
 Retry topology (RabbitMQ):
-  webhookhub.deliveries ──(TTL/NACK)──> webhookhub.dlx ──> webhookhub.dlq
-  worker (on failure)   ──────────────> webhookhub.retry (per-msg TTL)
+  webhookhub.deliveries ──(TTL/NACK)──> deliveries.dlx ──> deliveries.dlq
+  worker (on failure)   ──────────────> deliveries.retry.q (per-msg TTL)
                                                │ TTL expires
                                                └──> webhookhub.deliveries (next attempt)
 ```
@@ -30,7 +30,7 @@ Retry topology (RabbitMQ):
 |---|---|
 | `:shared` | Queue message models (`DeliveryJob`), environment config (`EnvConfig`), shared JSON instance (`AppJson`), RabbitMQ topology declaration |
 | `:api` | Ktor/Netty server — webhook ingestion (HMAC validation, idempotency, delivery scheduling), source and destination management, Flyway migrations, RabbitMQ topology init |
-| `:worker` | RabbitMQ consumer — HTTP delivery to destination URLs, exponential-backoff retry via `webhookhub.retry`, delivery state persistence (DELIVERED / RETRYING / DEAD) |
+| `:worker` | RabbitMQ consumer — HTTP delivery to destination URLs, retryable/non-retryable error classification, exponential-backoff retry via `deliveries.retry.q`, delivery state persistence (DELIVERED / RETRYING / DEAD), DLQ routing via `deliveries.dlx` |
 
 **Persistence** — Postgres is the source of truth for all delivery state, idempotency keys, and audit history.
 **Transport** — RabbitMQ is used exclusively as execution transport, not state storage.
@@ -273,13 +273,21 @@ The raw request body is forwarded as-is to the destination. The `type` query par
 ./gradlew :api:test --tests "*UseCaseTest" --tests "*RoutesTest"
 ```
 
-**Integration tests** (requires Docker for Testcontainers)
+**API integration tests** (requires Docker for Testcontainers)
 
 ```bash
 ./gradlew :api:test
 ```
 
-Testcontainers automatically pulls and manages isolated PostgreSQL containers. No running infrastructure needed.
+**Worker integration tests** (requires Docker for Testcontainers)
+
+```bash
+./gradlew :worker:test
+```
+
+Exercises the full retry/DLQ flow end-to-end: PostgreSQL and RabbitMQ spin up via Testcontainers; a JDK `HttpServer` acts as the webhook target with controlled response codes per attempt.
+
+Testcontainers automatically pulls and manages all containers. No running infrastructure needed.
 
 **Full test suite**
 
@@ -302,10 +310,10 @@ Declared idempotently on every startup by `RabbitMQTopology.declare()` in `:shar
 | Resource | Type | Configuration |
 |---|---|---|
 | `webhookhub` | direct exchange | main producer target |
-| `webhookhub.dlx` | fanout exchange | receives expired / nacked messages |
-| `webhookhub.deliveries` | durable queue | `x-message-ttl=30min`, `x-dead-letter-exchange=webhookhub.dlx` |
-| `webhookhub.retry` | durable queue | no consumer; `x-dead-letter-exchange=webhookhub`, `x-dead-letter-routing-key=delivery` — worker publishes failed jobs here with a per-message `expiration` equal to the backoff delay; on expiry the message is forwarded back to `webhookhub.deliveries` |
-| `webhookhub.dlq` | durable queue | bound to DLX — requires manual replay |
+| `deliveries.dlx` | fanout exchange | dedicated dead-letter exchange; receives messages from `webhookhub.deliveries` on TTL/nack, and application-published DEAD jobs |
+| `webhookhub.deliveries` | durable queue | `x-message-ttl=30min`, `x-dead-letter-exchange=deliveries.dlx` |
+| `deliveries.retry.q` | durable queue | no consumer; `x-dead-letter-exchange=webhookhub`, `x-dead-letter-routing-key=delivery` — worker publishes retryable failed jobs here with a per-message `expiration` equal to the backoff delay; on expiry the broker routes the message back to `webhookhub.deliveries` |
+| `deliveries.dlq` | durable queue | bound to `deliveries.dlx` — terminal destination for DEAD deliveries; requires manual replay |
 
 ---
 
@@ -329,30 +337,42 @@ Requests with a missing or invalid signature are rejected with `401 Unauthorized
 Duplicate deliveries are detected via a unique DB constraint on `(source_name, idempotency_key)`.
 Re-sending the same event returns a successful no-op — no new records are created and no jobs are re-published.
 
+**Error classification**
+
+HTTP errors are classified before deciding whether to retry:
+
+| Condition | Classification |
+|---|---|
+| Network / connection / timeout error | Retryable |
+| HTTP 429 Too Many Requests | Retryable |
+| HTTP 5xx | Retryable |
+| HTTP 4xx (except 429) | Non-retryable — delivery is moved to DEAD immediately |
+
 **Retry policy**
 
-Failed deliveries are retried with exponential backoff up to 5 attempts total.
-On each failure the worker updates the delivery record (`last_error`, `last_attempt_at`, `status=RETRYING`) and publishes the next attempt to `webhookhub.retry` with a per-message TTL; the broker forwards it back to the main queue once the delay expires.
+Retryable failures are retried with exponential backoff up to 5 attempts total.
+On each failure the worker updates the delivery record (`last_error`, `last_attempt_at`, `status=RETRYING`) and publishes the next attempt to `deliveries.retry.q` with a per-message TTL equal to the backoff delay; the broker forwards it back to `webhookhub.deliveries` once the delay expires.
 
-| Failed attempt | Delay before retry |
+Formula: `baseDelay × 2^(attempt − 1)`, capped at 30 minutes.
+
+| Failed attempt | Delay before next attempt |
 |---|---|
-| 1 | 30 s |
-| 2 | 2 min |
-| 3 | 10 min |
-| 4 | 30 min |
+| 1 | 5 s |
+| 2 | 10 s |
+| 3 | 20 s |
+| 4 | 40 s |
 | 5 (final) | no retry — status set to `DEAD` |
 
-Any non-2xx HTTP response or network/timeout error is treated as a failure.
-Once all attempts are exhausted the delivery record is marked `DEAD` and the message is acked without requeuing.
+Once retries are exhausted or the error is non-retryable, the delivery record is marked `DEAD`, the final `last_error` and attempt count are persisted, the job is published to `deliveries.dlq` via `deliveries.dlx`, and the original message is acked.
 
 **Dead Letter Queue (DLQ)**
 
-Messages in the DLQ require manual inspection and replay. Monitor via the RabbitMQ Management UI at http://localhost:15672.
+Permanently failed deliveries are published by the worker to `deliveries.dlx` (application-driven), which routes them to `deliveries.dlq`. Messages in the DLQ require manual inspection and replay. Monitor via the RabbitMQ Management UI at http://localhost:15672.
 
 **Concurrency**
 
 The worker sets `basicQos(5)` (prefetch count) so the broker delivers at most 5 unacknowledged messages at a time, matching the HikariCP pool size and preventing connection starvation.
-A message is only acknowledged after its delivery status has been durably written to the database; on any infrastructure failure the message is nacked (requeue=false) and dead-lettered to `webhookhub.dlq` for manual inspection.
+A message is only acknowledged after its delivery status has been durably written to the database; on any unhandled infrastructure failure the message is nacked (requeue=false) and dead-lettered to `deliveries.dlq` for manual inspection.
 
 ---
 
@@ -362,7 +382,7 @@ A message is only acknowledged after its delivery status has been durably writte
 Verify the container is healthy: `docker-compose ps`. Wait for the health check to pass before starting the API.
 
 **RabbitMQ exchanges/queues not found**
-The API declares all topology on startup. Check the Management UI at http://localhost:15672.
+Both the API and the worker declare all topology on startup via `RabbitMQTopology.declare()`. Check the Management UI at http://localhost:15672.
 
 **Flyway migration errors**
 Check that `DB_URL`, `DB_USER`, and `DB_PASSWORD` point to the correct database. Migrations run automatically on API startup.
