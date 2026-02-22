@@ -7,4 +7,5 @@ class FakeEventRepository(private var rejectAsDuplicate: Boolean = false) : Even
         saved.add(event)
         return true
     }
+    override fun findById(id: java.util.UUID): Event? = saved.find { it.id == id }
 }
