@@ -7,4 +7,7 @@ class EventUseCase(private val repository: EventRepository) {
 
     fun getEvent(id: UUID): Event =
         repository.findById(id) ?: throw NotFoundException("event not found")
+
+    fun listEvents(filter: EventFilter, page: Int, pageSize: Int): Pair<Long, List<Event>> =
+        repository.findFiltered(filter, page, pageSize)
 }

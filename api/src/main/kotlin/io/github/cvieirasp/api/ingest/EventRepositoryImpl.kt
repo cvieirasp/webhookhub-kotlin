@@ -1,7 +1,11 @@
 package io.github.cvieirasp.api.ingest
 
+import io.github.cvieirasp.api.delivery.DeliveryTable
 import org.jetbrains.exposed.exceptions.ExposedSQLException
 import org.jetbrains.exposed.sql.ResultRow
+import org.jetbrains.exposed.sql.SortOrder
+import org.jetbrains.exposed.sql.andWhere
+import org.jetbrains.exposed.sql.exists
 import org.jetbrains.exposed.sql.insert
 import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.transactions.transaction
@@ -41,6 +45,31 @@ class EventRepositoryImpl : EventRepository {
             .where { EventTable.id eq id }
             .map { it.toEvent() }
             .singleOrNull()
+    }
+
+    override fun findFiltered(filter: EventFilter, page: Int, pageSize: Int): Pair<Long, List<Event>> = transaction {
+        fun buildQuery() = EventTable.selectAll().apply {
+            filter.sourceName?.let { v -> andWhere { EventTable.sourceName eq v } }
+            filter.eventType?.let { v -> andWhere { EventTable.eventType eq v } }
+            filter.dateFrom?.let { v -> andWhere { EventTable.receivedAt greaterEq v } }
+            filter.dateTo?.let { v -> andWhere { EventTable.receivedAt lessEq v } }
+            filter.status?.let { s ->
+                andWhere {
+                    exists(
+                        DeliveryTable
+                            .selectAll()
+                            .where { DeliveryTable.eventId eq EventTable.id }
+                            .andWhere { DeliveryTable.status eq s }
+                    )
+                }
+            }
+        }
+        val total = buildQuery().count()
+        val items = buildQuery()
+            .orderBy(EventTable.receivedAt to SortOrder.DESC)
+            .limit(pageSize, ((page - 1) * pageSize).toLong())
+            .map { it.toEvent() }
+        total to items
     }
 
     private fun ResultRow.toEvent() = Event(
