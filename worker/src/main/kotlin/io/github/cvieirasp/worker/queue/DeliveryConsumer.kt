@@ -14,6 +14,7 @@ import io.github.cvieirasp.worker.http.HttpDeliveryClient
 import kotlinx.datetime.Clock
 import kotlinx.serialization.encodeToString
 import org.slf4j.LoggerFactory
+import org.slf4j.MDC
 import java.util.UUID
 
 /**
@@ -60,6 +61,7 @@ class DeliveryConsumer(
         val tag = envelope.deliveryTag
         try {
             val job = AppJson.decodeFromString<DeliveryJob>(body.toString(Charsets.UTF_8))
+            MDC.put("correlationId", job.correlationId)
             logger.info("Processing delivery={} attempt={}/{}", job.deliveryId, job.attempt, maxAttempts)
 
             when (val result = httpClient.post(job.targetUrl, job.payloadJson)) {
@@ -141,6 +143,8 @@ class DeliveryConsumer(
             logger.error("Unhandled failure for delivery tag={}; dead-lettering message", tag, e)
             // nack with requeue=false → broker forwards to the dead-letter exchange
             runCatching { channel.basicNack(tag, false, false) }
+        } finally {
+            MDC.remove("correlationId")
         }
     }
 
