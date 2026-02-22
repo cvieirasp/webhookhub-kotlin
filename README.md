@@ -254,7 +254,7 @@ Content-Type: application/json
 
 The raw request body is forwarded as-is to the destination. The `type` query parameter identifies the event type and is used to match destination routing rules.
 
-**Response `202 Accepted`** — returned for both new and duplicate events (idempotent)
+**Response `202 Accepted`** — event accepted and queued for delivery
 
 | Error | Condition |
 |---|---|
@@ -262,6 +262,144 @@ The raw request body is forwarded as-is to the destination. The `type` query par
 | `401 Unauthorized` | `X-Signature` header is missing, blank, or does not match `HMAC-SHA256(secret, body)` |
 | `401 Unauthorized` | Source exists but is inactive |
 | `404 Not Found` | No source registered under `{sourceName}` |
+| `409 Conflict` | Event with the same idempotency key was already ingested |
+
+---
+
+### Events
+
+#### Get an event
+
+```
+GET /events/{id}
+```
+
+**Response `200 OK`**
+```json
+{
+  "id": "d4e5f6...",
+  "sourceName": "github",
+  "type": "push",
+  "idempotencyKey": "abc123",
+  "correlationId": "f1e2d3...",
+  "createdAt": "2026-02-22T10:00:00Z",
+  "payload": "{\"ref\":\"main\"}"
+}
+```
+
+Returns `404 Not Found` if the event does not exist.
+
+#### List events
+
+```
+GET /events
+```
+
+| Query parameter | Type | Default | Description |
+|---|---|---|---|
+| `sourceName` | string | — | Filter by source name (exact match) |
+| `type` | string | — | Filter by event type (exact match) |
+| `status` | `PENDING` \| `DELIVERED` \| `RETRYING` \| `DEAD` | — | Filter by the delivery status of at least one delivery record |
+| `dateFrom` | ISO-8601 instant | — | Include events received at or after this time |
+| `dateTo` | ISO-8601 instant | — | Include events received at or before this time |
+| `page` | int | `1` | 1-based page number |
+| `pageSize` | int | `20` | Results per page (max `100`) |
+
+**Response `200 OK`**
+```json
+{
+  "totalCount": 42,
+  "page": 1,
+  "pageSize": 20,
+  "items": [ { "id": "...", "sourceName": "...", ... } ]
+}
+```
+
+Returns `400 Bad Request` for an invalid `status` value or a malformed `dateFrom`/`dateTo` instant.
+
+---
+
+### Deliveries
+
+#### Get a delivery
+
+```
+GET /deliveries/{id}
+```
+
+**Response `200 OK`**
+```json
+{
+  "id": "a1b2c3...",
+  "eventId": "d4e5f6...",
+  "destinationId": "g7h8i9...",
+  "status": "DELIVERED",
+  "attempts": 1,
+  "lastError": null,
+  "createdAt": "2026-02-22T10:00:00Z",
+  "deliveredAt": "2026-02-22T10:00:01Z"
+}
+```
+
+Returns `404 Not Found` if the delivery does not exist.
+
+#### List deliveries
+
+```
+GET /deliveries
+```
+
+| Query parameter | Type | Default | Description |
+|---|---|---|---|
+| `status` | `PENDING` \| `DELIVERED` \| `RETRYING` \| `DEAD` | — | Filter by delivery status |
+| `eventId` | UUID | — | Filter by parent event ID |
+| `page` | int | `1` | 1-based page number |
+| `pageSize` | int | `20` | Results per page (max `100`) |
+
+**Response `200 OK`**
+```json
+{
+  "totalCount": 5,
+  "page": 1,
+  "pageSize": 20,
+  "items": [ { "id": "...", "eventId": "...", "status": "PENDING", ... } ]
+}
+```
+
+Returns `400 Bad Request` for an invalid `status` value or a malformed `eventId`.
+
+---
+
+### Error responses
+
+Every error from the API returns a consistent JSON body regardless of the endpoint:
+
+```json
+{
+  "status": 409,
+  "error": "Conflict",
+  "message": "duplicate event: idempotency key already exists",
+  "correlationId": "f1e2d3c4-...",
+  "timestamp": "2026-02-22T10:00:00.000000000Z"
+}
+```
+
+| Field | Description |
+|---|---|
+| `status` | HTTP status code as an integer |
+| `error` | Standard HTTP status description |
+| `message` | Human-readable detail from the thrown exception |
+| `correlationId` | Per-request correlation ID (present on ingest requests; `null` elsewhere) |
+| `timestamp` | ISO-8601 instant at which the error was generated |
+
+| Status | Cause |
+|---|---|
+| `400 Bad Request` | Validation failure (`IllegalArgumentException`, Ktor `BadRequestException`) |
+| `401 Unauthorized` | Authentication failure (`UnauthorizedException`) |
+| `404 Not Found` | Resource not found (`NotFoundException`) or unmatched route |
+| `409 Conflict` | Duplicate event (`DuplicateEventException`) |
+| `405 Method Not Allowed` | HTTP method not supported on the matched route |
+| `500 Internal Server Error` | Any unhandled `Throwable` |
 
 ---
 
@@ -334,8 +472,9 @@ Requests with a missing or invalid signature are rejected with `401 Unauthorized
 
 **Idempotency**
 
-Duplicate deliveries are detected via a unique DB constraint on `(source_name, idempotency_key)`.
-Re-sending the same event returns a successful no-op — no new records are created and no jobs are re-published.
+Duplicate events are detected via a unique DB constraint on `(source_name, idempotency_key)`.
+Re-sending the same payload returns `409 Conflict` — no new records are created and no jobs are re-published.
+The original event and its delivery records remain unaffected.
 
 **Error classification**
 
