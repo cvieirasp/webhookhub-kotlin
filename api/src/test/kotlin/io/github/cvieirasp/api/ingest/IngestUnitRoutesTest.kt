@@ -140,7 +140,7 @@ class IngestUnitRoutesTest {
     }
 
     @Test
-    fun `POST ingest returns 202 for duplicate delivery`() {
+    fun `POST ingest returns 409 for duplicate event`() {
         val secret = "a".repeat(64)
         val body = "payload"
         val signature = computeHmac(secret, body.toByteArray())
@@ -153,7 +153,7 @@ class IngestUnitRoutesTest {
                 header("X-Signature", signature)
                 setBody(body)
             }
-            assertEquals(HttpStatusCode.Accepted, response.status)
+            assertEquals(HttpStatusCode.Conflict, response.status)
         }
     }
 

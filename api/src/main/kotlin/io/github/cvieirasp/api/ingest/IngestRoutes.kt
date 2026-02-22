@@ -1,5 +1,6 @@
 package io.github.cvieirasp.api.ingest
 
+import io.github.cvieirasp.api.plugins.CORRELATION_ID_KEY
 import io.ktor.http.*
 import io.ktor.server.request.*
 import io.ktor.server.response.*
@@ -21,6 +22,7 @@ import java.util.UUID
 fun Route.ingestRoutes(useCase: IngestUseCase) {
     post("/ingest/{sourceName}") {
         val correlationId = UUID.randomUUID().toString()
+        call.attributes.put(CORRELATION_ID_KEY, correlationId)
         val sourceName = call.parameters["sourceName"]!!
         val eventType = call.queryParameters["type"] ?: ""
         val signature = call.request.headers["X-Signature"] ?: ""

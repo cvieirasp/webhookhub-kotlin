@@ -1,5 +1,6 @@
 package io.github.cvieirasp.api.ingest
 
+import io.github.cvieirasp.api.DuplicateEventException
 import io.github.cvieirasp.api.NotFoundException
 import io.github.cvieirasp.api.UnauthorizedException
 import io.github.cvieirasp.api.delivery.DeliveryStatus
@@ -108,7 +109,7 @@ class IngestUnitUseCaseTest {
     }
 
     @Test
-    fun `ingest returns empty list when event is a duplicate`() {
+    fun `ingest throws DuplicateEventException when event is a duplicate`() {
         val secret = "a".repeat(64)
         val body = "payload".toByteArray()
         val signature = computeHmac(secret, body)
@@ -116,9 +117,9 @@ class IngestUnitUseCaseTest {
         val duplicateRepo = FakeEventRepository(rejectAsDuplicate = true)
         val duplicateUseCase = IngestUseCase(repository, duplicateRepo, destinationRepository, deliveryRepository, deliveryPublisher)
 
-        val result = duplicateUseCase.ingest("github", "push", body, signature, "test-correlation-id")
-
-        assertEquals(emptyList(), result)
+        assertFailsWith<DuplicateEventException> {
+            duplicateUseCase.ingest("github", "push", body, signature, "test-correlation-id")
+        }
         assertTrue(deliveryRepository.saved.isEmpty())
         assertTrue(deliveryPublisher.published.isEmpty())
     }

@@ -1,5 +1,6 @@
 package io.github.cvieirasp.api.ingest
 
+import io.github.cvieirasp.api.DuplicateEventException
 import io.github.cvieirasp.api.NotFoundException
 import io.github.cvieirasp.api.UnauthorizedException
 import io.github.cvieirasp.api.delivery.Delivery
@@ -72,7 +73,7 @@ class IngestUseCase(
         val isNew = eventRepository.save(event)
         if (!isNew) {
             WebhookEventLogger.duplicateDetected(sourceName, event.id.toString())
-            return emptyList()
+            throw DuplicateEventException("duplicate event: idempotency key already exists")
         }
 
         return destinationRepository.findBySourceNameAndEventType(sourceName, eventType).map { destination ->

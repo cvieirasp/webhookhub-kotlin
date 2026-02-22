@@ -164,7 +164,7 @@ class IngestIntegrationApiTest {
     }
 
     @Test
-    fun `duplicate POST ingest both return 202 and events table contains exactly one row`() {
+    fun `duplicate POST ingest returns 202 on first call and 409 on second, events table contains exactly one row`() {
         val secret = "a".repeat(64)
         insertSource("github", secret)
         val body = """{"event":"push"}"""
@@ -181,7 +181,7 @@ class IngestIntegrationApiTest {
             }
 
             assertEquals(HttpStatusCode.Accepted, first.status)
-            assertEquals(HttpStatusCode.Accepted, second.status)
+            assertEquals(HttpStatusCode.Conflict, second.status)
         }
 
         val count = transaction { EventTable.selectAll().count() }
