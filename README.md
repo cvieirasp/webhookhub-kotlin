@@ -7,29 +7,14 @@ It receives signed HTTP webhook events, persists them, and delivers them asynchr
 
 ## Architecture
 
-```
-             ┌─────────────┐
-HTTP POST ──>│     :api     │── publishes job ──> webhookhub.deliveries
-             │  (Ktor/Netty)│                          │
-             │  + Postgres  │                    ┌─────▼──────┐
-             └─────────────┘                    │   :worker   │── HTTP POST ──> destination
-                                                │  (consumer) │
-                                                │  + Postgres │
-                                                └─────────────┘
-
-Retry topology (RabbitMQ):
-  webhookhub.deliveries ──(TTL/NACK)──> deliveries.dlx ──> deliveries.dlq
-  worker (on failure)   ──────────────> deliveries.retry.q (per-msg TTL)
-                                               │ TTL expires
-                                               └──> webhookhub.deliveries (next attempt)
-```
+![Diagram](docs/webhookhub-architecture.png)
 
 **Modules**
 
 | Module | Responsibility |
 |---|---|
 | `:shared` | Queue message models (`DeliveryJob`), environment config (`EnvConfig`), shared JSON instance (`AppJson`), RabbitMQ topology declaration |
-| `:api` | Ktor/Netty server — webhook ingestion (HMAC validation, idempotency, delivery scheduling), source and destination management, Flyway migrations, RabbitMQ topology init |
+| `:api` | Ktor server — webhook ingestion (HMAC validation, idempotency, delivery scheduling), source and destination management, Flyway migrations, RabbitMQ topology init |
 | `:worker` | RabbitMQ consumer — HTTP delivery to destination URLs, retryable/non-retryable error classification, exponential-backoff retry via `deliveries.retry.q`, delivery state persistence (DELIVERED / RETRYING / DEAD), DLQ routing via `deliveries.dlx` |
 
 **Persistence** — Postgres is the source of truth for all delivery state, idempotency keys, and audit history.
@@ -39,69 +24,15 @@ Retry topology (RabbitMQ):
 
 ## Design decisions
 
-### Why split into API, Worker, and Shared?
-
-The system separates ingestion from delivery because the two workloads have fundamentally different runtime characteristics.
-
-The **API** is request-driven: it must respond in milliseconds, validate signatures, persist the event, and enqueue a job. Tying delivery into the request cycle would couple latency to the health of every downstream destination — one slow or failing webhook target would block the caller.
-
-The **Worker** is queue-driven: it runs as a long-lived consumer, owns all retry logic, and interacts with destination URLs that may be slow or unavailable. Its concurrency is controlled independently via RabbitMQ prefetch count (`basicQos(5)`), not by the HTTP thread pool of the API. Both processes can be scaled, deployed, and restarted independently.
-
-The **Shared** module exists to eliminate duplication without coupling. The API publishes `DeliveryJob` messages and the Worker consumes them — they must agree on the same wire format. Likewise, both processes declare the RabbitMQ topology on startup; declaring it in a single `RabbitMQTopology.declare()` call in Shared guarantees they always agree on exchange names, queue arguments, and bindings, with no risk of drift between the two codebases.
-
----
-
-### Why feature-based packages rather than layer-based?
-
-Each module is organised by **feature** (`source`, `destination`, `ingest`, `delivery`) rather than by layer (`controllers`, `services`, `repositories`). Every feature folder owns its domain model, table definition, repository interface and implementation, use case, and routes.
-
-This keeps related code co-located. When working on delivery retries, for example, everything relevant is under `delivery/`; there is no need to jump between a `controllers/` package, a `services/` package, and a `repositories/` package to understand a single feature. Adding, changing, or deleting a feature is a self-contained operation.
-
-Layer-based organisation tends to produce high coupling between distant files and low cohesion within each layer. Feature-based organisation inverts that: each feature is highly cohesive and minimally coupled to other features.
-
----
-
-### Why the Use Case layer?
-
-Each feature exposes its logic through a **use case class** (`IngestUseCase`, `DeliveryUseCase`, etc.) rather than putting business logic directly inside route handlers or repository implementations.
-
-This separation means:
-
-- **Routes stay thin.** They parse the HTTP request, call the use case, and map the result to a response. They contain no business rules.
-- **Use cases are independently testable.** They receive their dependencies (repositories, publishers) via constructor injection. Unit tests can pass fakes or mocks without spinning up a Ktor server or a database.
-- **Business logic is named explicitly.** A use case method like `ingest(sourceName, eventType, signature, rawBody)` documents a business operation; a route handler that does the same work inline does not.
-
----
-
-### Why repository interfaces?
-
-Repositories are defined as interfaces and injected into use cases. The API integration tests and worker integration tests run against real PostgreSQL containers via Testcontainers, but individual use case unit tests can use simple in-memory fakes.
-
-This also keeps the persistence technology out of the business logic. The use case knows nothing about SQL, Exposed table objects, or HikariCP — it calls `eventRepository.save(event)` and moves on.
-
----
-
-### Why Ktor instead of Spring?
-
-Ktor is lightweight and coroutine-native. It starts fast, requires minimal configuration, and has no hidden "magic" — every plugin, route, and serialiser is registered explicitly in code. This makes the startup sequence easy to follow and test.
-
-Spring Boot's abstractions are valuable in large teams maintaining large codebases, but for a focused service like this they introduce overhead (annotation scanning, proxy generation, autoconfiguration) without adding proportional value.
-
----
-
-### Why Exposed instead of JPA/Hibernate?
-
-Exposed's SQL DSL means the queries written in the repository implementations are very close to the SQL that will actually run. There is no session lifecycle, no lazy-loading surprise, no N+1 query to hunt down, and no entity state machine to reason about. The mapping from result set to domain model is explicit and straightforward.
-
-JPA is powerful but trades control for convenience. In a system where delivery throughput and predictable query behaviour matter, explicit SQL is the better trade-off.
-
----
-
-### Why is PostgreSQL the source of truth and RabbitMQ only a transport?
-
-Every delivery is persisted to PostgreSQL as a `PENDING` record **before** the job is published to RabbitMQ. The broker is used purely for execution scheduling — getting the job to a worker — not for storing state.
-
-This means the database is always authoritative. If RabbitMQ is restarted or a queue is purged, the delivery records remain in Postgres and can be replayed. The worker writes `DELIVERED`, `RETRYING`, or `DEAD` back to the database after each attempt, so the current state of every delivery is always queryable without inspecting the broker.
+| Decision | Document |
+|---|---|
+| Why split into API, Worker, and Shared? | [design-module-split.md](docs/design-module-split.md) |
+| Why feature-based packages rather than layer-based? | [design-feature-based-packages.md](docs/design-feature-based-packages.md) |
+| Why the Use Case layer? | [design-use-case-layer.md](docs/design-use-case-layer.md) |
+| Why repository interfaces? | [design-repository-interfaces.md](docs/design-repository-interfaces.md) |
+| Why Ktor instead of Spring? | [design-ktor-over-spring.md](docs/design-ktor-over-spring.md) |
+| Why Exposed instead of JPA/Hibernate? | [design-exposed-over-jpa.md](docs/design-exposed-over-jpa.md) |
+| Why PostgreSQL as source of truth and RabbitMQ only as transport? | [design-postgres-source-of-truth.md](docs/design-postgres-source-of-truth.md) |
 
 ---
 
@@ -526,6 +457,12 @@ Testcontainers automatically pulls and manages all containers. No running infras
 ## RabbitMQ Topology
 
 Declared idempotently on every startup by `RabbitMQTopology.declare()` in `:shared`.
+
+**TTL (Time-To-Live)** - a per-queue or per-message expiry. When a message sits unacknowledged longer than the TTL, RabbitMQ removes it from the queue. If a dead-letter exchange is configured, the expired message is forwarded there instead of being discarded. WebhookHub uses TTL in two places: `webhookhub.deliveries` has a 30-minute queue-level TTL (messages not picked up within that window are dead-lettered), and `deliveries.retry.q` uses per-message TTL set by the worker to implement the exact backoff delay before the next attempt.
+
+**DLX (Dead-Letter Exchange)** - an exchange that RabbitMQ forwards messages to when they are rejected, nacked, or expire. It decouples the "something went wrong with this message" signal from the handling of that message. In WebhookHub, `deliveries.dlx` is a fanout exchange that acts as the central routing point for all permanently failed deliveries, whether they timed out on the main queue or were explicitly dead-lettered by the worker after exhausting retries.
+
+**DLQ (Dead-Letter Queue)** - a regular durable queue bound to `deliveries.dlx`. It is the terminal destination for messages that cannot be delivered. No consumer processes it automatically; messages accumulate there for manual inspection and replay. In WebhookHub, `deliveries.dlq` catches both TTL-expired messages from `webhookhub.deliveries` and jobs the worker has classified as permanently failed (non-retryable or retries exhausted).
 
 | Resource | Type | Configuration |
 |---|---|---|

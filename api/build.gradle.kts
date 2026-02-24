@@ -47,6 +47,6 @@ tasks.named<JavaExec>("run") {
         jvmArgs("-javaagent:${otelAgent.singleFile.absolutePath}")
     }
     environment("OTEL_SERVICE_NAME",             System.getenv("OTEL_SERVICE_NAME")             ?: "webhookhub-api")
-    environment("OTEL_EXPORTER_OTLP_ENDPOINT",   System.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")   ?: "http://localhost:4317")
+    environment("OTEL_EXPORTER_OTLP_ENDPOINT",   System.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")   ?: "http://localhost:4318")
     environment("OTEL_LOGS_EXPORTER",            System.getenv("OTEL_LOGS_EXPORTER")            ?: "none")
 }
